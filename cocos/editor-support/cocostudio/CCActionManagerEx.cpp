@@ -58,8 +58,9 @@ ActionManagerEx::~ActionManagerEx()
     _actionDic.clear();
 }
 
-void ActionManagerEx::initWithDictionary(const char* jsonName,const rapidjson::Value &dic, Ref* root)
+void ActionManagerEx::initWithDictionary(const char* jsonName,const rapidjson::Value &dic, Ref* root, int version)
 {
+    _studioVersionNumber = version;
     std::string path = jsonName;
     ssize_t pos = path.find_last_of("/");
     std::string fileName = path.substr(pos+1,path.length());
@@ -182,5 +183,10 @@ void ActionManagerEx::releaseActions()
     _actionDic.clear();
 }
 
+int ActionManagerEx::getStudioVersionNumber() const
+{
+    return _studioVersionNumber;
+}
+    
 }
 
