@@ -24,6 +24,8 @@
 
 (function(load, baseParser){
 
+    var __isVersionInfoOutputted = false;
+
     var Parser = baseParser.extend({
 
         addSpriteFrame: function(textures, resourcePath){
@@ -39,7 +41,13 @@
 
         deferred: function(json, resourcePath, node, file){
             if(node){
-                ccs.actionManager.initWithDictionary(file, json["animation"], node);
+                var version = json["Version"] || json["version"];
+                if (!__isVersionInfoOutputted) {
+                    cc.log("studio version: " + version);
+                    __isVersionInfoOutputted = true;
+                }
+                var versionNum = ccs.uiReader.getVersionInteger(version);
+                ccs.actionManager.initWithDictionary(file, json["animation"], node, versionNum);
                 node.setContentSize(cc.size(json["designWidth"], json["designHeight"]));
             }
         }

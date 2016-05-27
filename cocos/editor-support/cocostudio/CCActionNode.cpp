@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include "ui/UILayout.h"
 #include "cocostudio/CocoLoader.h"
 #include "base/ccUtils.h"
+#include "cocostudio/CCActionManagerEx.h"
 
 using namespace cocos2d;
 using namespace ui;
@@ -107,7 +108,7 @@ void ActionNode::initWithDictionary(const rapidjson::Value& dic, Ref* root)
         {
             float positionX = DICTOOL->getFloatValue_json(actionFrameDic, "positionx");
             float positionY = DICTOOL->getFloatValue_json(actionFrameDic, "positiony");
-            if (positionOffset && (nullptr != node->getParent()))
+            if (positionOffset && (nullptr != node->getParent()) && ActionManagerEx::getInstance()->getStudioVersionNumber() < 1600)
             {
                 Vec2 AnchorPointIn = node->getParent()->getAnchorPointInPoints();
                 positionX += AnchorPointIn.x;
