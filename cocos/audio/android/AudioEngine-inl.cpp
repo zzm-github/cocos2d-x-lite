@@ -42,13 +42,45 @@
 using namespace cocos2d;
 using namespace cocos2d::experimental;
 
-#define DELAY_TIME_TO_REMOVE 0.5f
+#define  LOG_TAG    "cocos2d-x debug"
+#define  ALOGV(...)  __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
+#define  ALOGD(...)  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define  ALOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-void PlayOverEvent(SLPlayItf caller, void* context, SLuint32 playEvent)
+#define DELAY_TIME_TO_REMOVE (0.5f)
+#define SCHEDULE_INVERVAL (0.03f)
+
+#define SL_BREAK_IF_FAILED(r, ...) \
+    if (r != SL_RESULT_SUCCESS) {\
+        ALOGE(__VA_ARGS__); \
+        break; \
+    }
+
+#define SL_RETURN_IF_FAILED(r, ...) \
+    if (r != SL_RESULT_SUCCESS) {\
+        ALOGE(__VA_ARGS__); \
+        return; \
+    }
+
+#define SL_DESTROY_OBJ(OBJ)    \
+    if ((OBJ) != nullptr) { \
+        (*(OBJ))->Destroy(OBJ); \
+        (OBJ) = nullptr; \
+    }
+
+
+/* used to detect errors likely to have occurred when the OpenSL ES framework fails to open
+ * a resource, for instance because a file URI is invalid, or an HTTP server doesn't respond.
+ */
+#define PREFETCHEVENT_ERROR_CANDIDATE (SL_PREFETCHEVENT_STATUSCHANGE | SL_PREFETCHEVENT_FILLLEVELCHANGE)
+
+// static
+void AudioPlayer::playOverEvent(SLPlayItf caller, void* context, SLuint32 playEvent)
 {
     if (context && playEvent == SL_PLAYEVENT_HEADATEND)
     {
         AudioPlayer* player = (AudioPlayer*)context;
+        ALOGD("SL_PLAYEVENT_HEADATEND, audioId:%d", (int) player->_audioID);
         //fix issue#8965:AudioEngine can't looping audio on Android 2.3.x
         if (player->_loop)
         {
@@ -61,14 +93,44 @@ void PlayOverEvent(SLPlayItf caller, void* context, SLuint32 playEvent)
     }
 }
 
+// static
+void AudioPlayer::prefetchCallback(SLPrefetchStatusItf caller, void* context, SLuint32 event)
+{
+    AudioPlayer* self = (AudioPlayer*) context;
+    SLpermille level = 0;
+    SLresult result;
+    result = (*caller)->GetFillLevel(caller, &level);
+    SL_RETURN_IF_FAILED(result, "GetFillLevel failed");
+
+    SLuint32 status;
+    //ALOGV("PrefetchEventCallback: received event %u", event);
+    result = (*caller)->GetPrefetchStatus(caller, &status);
+
+    SL_RETURN_IF_FAILED(result, "GetPrefetchStatus failed");
+
+    if ((PREFETCHEVENT_ERROR_CANDIDATE == (event & PREFETCHEVENT_ERROR_CANDIDATE))
+        && (level == 0) && (status == SL_PREFETCHSTATUS_UNDERFLOW))
+    {
+        ALOGV("PrefetchEventCallback: Error while prefetching data, exiting");
+        self->_prefetchError = true;
+    }
+}
+
 AudioPlayer::AudioPlayer()
-    : _fdPlayerObject(nullptr)
-    , _finishCallback(nullptr)
-    , _duration(0.0f)
-    , _playOver(false)
+    : _playOver(false)
     , _loop(false)
+    , _fdPlayerPlay(nullptr)
+    , _fdPlayerObject(nullptr)
+    , _fdPlayerSeek(nullptr)
+    , _fdPlayerVolume(nullptr)
+    , _prefetchItf(nullptr)
+    , _duration(AudioEngine::TIME_UNKNOWN)
+    , _deltaTimeAfterPlay(0.0f)
+    , _audioID(AudioEngine::INVALID_AUDIO_ID)
     , _assetFd(0)
     , _delayTimeToRemove(-1.f)
+    , _prefetchError(false)
+    , _finishCallback(nullptr)
 {
 
 }
@@ -82,6 +144,7 @@ AudioPlayer::~AudioPlayer()
         _fdPlayerPlay = nullptr;
         _fdPlayerVolume = nullptr;
         _fdPlayerSeek = nullptr;
+        _prefetchItf = nullptr;
     }
     if(_assetFd > 0)
     {
@@ -162,6 +225,10 @@ bool AudioPlayer::init(SLEngineItf engineEngine, SLObjectItf outputMixObject,con
         result = (*_fdPlayerObject)->GetInterface(_fdPlayerObject, SL_IID_VOLUME, &_fdPlayerVolume);
         if(SL_RESULT_SUCCESS != result){ ERRORLOG("get the volume interface fail"); break; }
 
+        /* Get the prefetch status interface which was explicitly requested */
+        result = (*_fdPlayerObject)->GetInterface(_fdPlayerObject, SL_IID_PREFETCHSTATUS, (void *) &_prefetchItf);
+        if (SL_RESULT_SUCCESS != result){ ERRORLOG("GetInterface SL_IID_PREFETCHSTATUS failed"); break; }
+
         _loop = loop;
         if (loop){
             (*_fdPlayerSeek)->SetLoop(_fdPlayerSeek, SL_BOOLEAN_TRUE, 0, SL_TIME_UNKNOWN);
@@ -173,11 +240,43 @@ bool AudioPlayer::init(SLEngineItf engineEngine, SLObjectItf outputMixObject,con
         }
         (*_fdPlayerVolume)->SetVolumeLevel(_fdPlayerVolume, dbVolume);
 
+        /* ------------------------------------------------------ */
+        /* Initialize the callback for prefetch errors, if we can't open the resource to decode */
+        result = (*_prefetchItf)->RegisterCallback(_prefetchItf,
+                                                  AudioPlayer::prefetchCallback,
+                                                  this);
+        SL_BREAK_IF_FAILED(result, "prefetchItf RegisterCallback failed");
+
+        result = (*_prefetchItf)->SetCallbackEventsMask(_prefetchItf, PREFETCHEVENT_ERROR_CANDIDATE);
+        SL_BREAK_IF_FAILED(result, "prefetchItf SetCallbackEventsMask failed");
+
         result = (*_fdPlayerPlay)->SetPlayState(_fdPlayerPlay, SL_PLAYSTATE_PLAYING);
         if(SL_RESULT_SUCCESS != result){ ERRORLOG("SetPlayState fail"); break; }
 
+        SLuint32 prefetchStatus = SL_PREFETCHSTATUS_UNDERFLOW;
+        SLuint32 timeOutIndex = 1000; // time out prefetching after 2s
+        while ((prefetchStatus != SL_PREFETCHSTATUS_SUFFICIENTDATA) && (timeOutIndex > 0) &&
+               !_prefetchError)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            (*_prefetchItf)->GetPrefetchStatus(_prefetchItf, &prefetchStatus);
+            timeOutIndex--;
+        }
+
+        // ALOGV("timeOutIndex: %d", (int)timeOutIndex);
+        if (timeOutIndex == 0 || _prefetchError)
+        {
+            ALOGE("Failure to prefetch data in time, exiting");
+            SL_BREAK_IF_FAILED(SL_RESULT_CONTENT_NOT_FOUND, "Failure to prefetch data in time");
+        }
+
         ret = true;
     } while (0);
+
+    if (!ret)
+    {
+        SL_DESTROY_OBJ(_fdPlayerObject);
+    }
 
     return ret;
 }
@@ -255,20 +354,25 @@ int AudioEngineImpl::play2d(const std::string &filePath ,bool loop ,float volume
             break;
         }
 
+
+        SLresult r;
+        r = (*(player._fdPlayerPlay))->RegisterCallback(player._fdPlayerPlay, AudioPlayer::playOverEvent, (void*)&player);
+        SL_BREAK_IF_FAILED(r, "RegisterCallback error, path: %s", fullPath.c_str());
+
+        r = (*(player._fdPlayerPlay))->SetCallbackEventsMask(player._fdPlayerPlay, SL_PLAYEVENT_HEADATEND);
+        SL_BREAK_IF_FAILED(r, "SetCallbackEventsMask error, path: %s", fullPath.c_str());
+
         audioId = currentAudioID++;
         player._audioID = audioId;
-
-        (*(player._fdPlayerPlay))->RegisterCallback(player._fdPlayerPlay, PlayOverEvent, (void*)&player);
-        (*(player._fdPlayerPlay))->SetCallbackEventsMask(player._fdPlayerPlay, SL_PLAYEVENT_HEADATEND);
-
         AudioEngine::_audioIDInfoMap[audioId].state = AudioEngine::AudioState::PLAYING;
 
         if (_lazyInitLoop) {
             _lazyInitLoop = false;
 
             auto scheduler = Director::getInstance()->getScheduler();
-            scheduler->schedule(schedule_selector(AudioEngineImpl::update), this, 0.03f, false);
+            scheduler->schedule(schedule_selector(AudioEngineImpl::update), this, SCHEDULE_INVERVAL, false);
         }
+        // log("play2d, audioId:%d, path: %s", audioId, fullPath.c_str());
     } while (0);
 
     return audioId;
@@ -282,6 +386,29 @@ void AudioEngineImpl::update(float dt)
     for (auto iter = _audioPlayers.begin(); iter != itend; )
     {
         player = &(iter->second);
+
+        if (!player->_loop)
+        {
+            if (dt < SCHEDULE_INVERVAL * 2)
+            {
+                float duration = getDuration(player->_audioID);
+                if (duration > 0)
+                {
+                    player->_deltaTimeAfterPlay += dt;
+                    // ALOGV("audioId:%d, duration: %f, dt: %f, _deltaTimeAfterPlay: %f", player->_audioID, duration, dt, player->_deltaTimeAfterPlay);
+                    if (player->_deltaTimeAfterPlay > (duration + 1.0f))
+                    {
+                        ALOGV("play time is longer than audio duration, set play over flag, audioId: %d", player->_audioID);
+                        player->_playOver = true;
+                    }
+                }
+            }
+            else
+            {
+                ALOGV("dt is too large, ignore to add it to _deltaTimeAfterPlay");
+            }
+        }
+
         if (player->_delayTimeToRemove > 0.f)
         {
             player->_delayTimeToRemove -= dt;
@@ -293,6 +420,7 @@ void AudioEngineImpl::update(float dt)
         }
         else if (player->_playOver)
         {
+            log("_playOver, audioId:%d", player->_audioID);
             if (player->_finishCallback)
                 player->_finishCallback(player->_audioID, *AudioEngine::_audioIDInfoMap[player->_audioID].filePath);
 
@@ -356,6 +484,7 @@ void AudioEngineImpl::resume(int audioID)
 
 void AudioEngineImpl::stop(int audioID)
 {
+    log("AudioEngineImpl::stop, audioId: %d", audioID);
     auto& player = _audioPlayers[audioID];
     auto result = (*player._fdPlayerPlay)->SetPlayState(player._fdPlayerPlay, SL_PLAYSTATE_STOPPED);
     if(SL_RESULT_SUCCESS != result){
@@ -373,6 +502,7 @@ void AudioEngineImpl::stop(int audioID)
 
 void AudioEngineImpl::stopAll()
 {
+    log("AudioEngineImpl::stopAll...");
     auto itEnd = _audioPlayers.end();
     for (auto it = _audioPlayers.begin(); it != itEnd; ++it)
     {
@@ -387,8 +517,11 @@ void AudioEngineImpl::stopAll()
 
 float AudioEngineImpl::getDuration(int audioID)
 {
-    SLmillisecond duration;
     auto& player = _audioPlayers[audioID];
+    if (player._duration > 0)
+        return player._duration;
+
+    SLmillisecond duration;
     auto result = (*player._fdPlayerPlay)->GetDuration(player._fdPlayerPlay, &duration);
     if (duration == SL_TIME_UNKNOWN){
         return AudioEngine::TIME_UNKNOWN;
@@ -431,10 +564,10 @@ void AudioEngineImpl::setFinishCallback(int audioID, const std::function<void (i
 
 void AudioEngineImpl::preload(const std::string& filePath, std::function<void(bool)> callback)
 {
-    CCLOG("Preload not support on Anroid");
+    log("Preload isn't supported on Android!");
     if (callback)
     {
-        callback(false);
+        callback(true);
     }
 }
 

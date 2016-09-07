@@ -200,6 +200,7 @@ int AudioEngine::play2d(const std::string& filePath, bool loop, float volume, co
             profileHelper->profile = *profile;
         }
 
+        log("_audioIDInfoMap.size: %d", (int)_audioIDInfoMap.size());
         if (_audioIDInfoMap.size() >= _maxInstances) {
             log("Fail to play %s cause by limited max instance of AudioEngine",filePath.c_str());
             break;

@@ -48,19 +48,26 @@ public:
     ~AudioPlayer();
 
     bool init(SLEngineItf engineEngine, SLObjectItf outputMixObject,const std::string& fileFullPath, float volume, bool loop);
+private:
+
+    static void playOverEvent(SLPlayItf caller, void* context, SLuint32 playEvent);
+    static void prefetchCallback(SLPrefetchStatusItf caller, void* context, SLuint32 event);
 
     bool _playOver;
     bool _loop;
+
     SLPlayItf _fdPlayerPlay;
-private:
     SLObjectItf _fdPlayerObject;
     SLSeekItf _fdPlayerSeek;
     SLVolumeItf _fdPlayerVolume;
+    SLPrefetchStatusItf _prefetchItf;
 
     float _duration;
+    float _deltaTimeAfterPlay;
     int _audioID;
     int _assetFd;
     float _delayTimeToRemove;
+    bool _prefetchError;
 
     std::function<void (int, const std::string &)> _finishCallback;
 
