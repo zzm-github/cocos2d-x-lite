@@ -42,6 +42,9 @@ THE SOFTWARE.
 static EditTextCallback s_editTextCallback = nullptr;
 static void* s_ctx = nullptr;
 
+static int __deviceSampleRate = 44100;
+static int __deviceAudioBufferSizeInFrames = 192;
+
 using namespace cocos2d;
 using namespace std;
 
@@ -56,6 +59,12 @@ extern "C" {
     JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetContext(JNIEnv* env, jobject thiz, jobject classLoader, jobject assetManager) {
         JniHelper::setClassLoaderFrom(classLoader);
         FileUtilsAndroid::setassetmanager(AAssetManager_fromJava(env, assetManager));
+    }
+
+    JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetAudioDeviceInfo(JNIEnv*  env, jobject thiz, jboolean isSupportLowLatency, jint deviceSampleRate, jint deviceAudioBufferSizeInFrames) {
+        __deviceSampleRate = deviceSampleRate;
+        __deviceAudioBufferSizeInFrames = deviceAudioBufferSizeInFrames;
+        LOGD("nativeSetAudioDeviceInfo: sampleRate: %d, bufferSizeInFrames: %d", __deviceSampleRate, __deviceAudioBufferSizeInFrames);
     }
 
     JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetEditTextDialogResult(JNIEnv* env, jobject obj, jbyteArray text) {
@@ -107,5 +116,15 @@ void conversionEncodingJNI(const char* src, int byteSize, const char* fromCharse
         methodInfo.env->DeleteLocalRef(stringArg2);
         methodInfo.env->DeleteLocalRef(methodInfo.classID);
     }
+}
+
+int getDeviceSampleRate()
+{
+    return __deviceSampleRate;
+}
+
+int getDeviceAudioBufferSizeInFrames()
+{
+    return __deviceAudioBufferSizeInFrames;
 }
 

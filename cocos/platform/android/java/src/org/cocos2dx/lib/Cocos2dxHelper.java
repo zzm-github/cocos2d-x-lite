@@ -24,6 +24,9 @@ THE SOFTWARE.
  ****************************************************************************/
 package org.cocos2dx.lib;
 
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.media.AudioManager;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -37,6 +40,7 @@ import android.preference.PreferenceManager.OnActivityResultListener;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.WindowManager;
+import android.util.Log;
 
 import java.io.UnsupportedEncodingException;
 import java.util.LinkedHashSet;
@@ -47,6 +51,7 @@ import java.util.Set;
 public class Cocos2dxHelper {
     private static final String PREFS_NAME = "Cocos2dxPrefsFile";
     private static final int RUNNABLES_PER_FRAME = 5;
+    private static final String TAG = Cocos2dxHelper.class.getSimpleName();
 
     // ===========================================================
     // Fields
@@ -71,6 +76,37 @@ public class Cocos2dxHelper {
     private static boolean sInited = false;
     public static void init(final Activity activity) {
         if (!sInited) {
+            PackageManager pm = activity.getPackageManager();
+            boolean isSupportLowLatency = pm.hasSystemFeature(PackageManager.FEATURE_AUDIO_LOW_LATENCY);
+
+            Log.d(TAG, "isSupportLowLatency:" + isSupportLowLatency);
+
+            int sampleRate = 44100;
+            int bufferSizeInFrames = 192;
+
+            if (Build.VERSION.SDK_INT >= 17) {
+                AudioManager am = (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
+                // use reflection to remove dependence of API 17 when compiling
+
+                // AudioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
+                final Class audioManagerClass = AudioManager.class;
+                Object[] parameters = new Object[]{Cocos2dxReflectionHelper.<String>getConstantValue(audioManagerClass, "PROPERTY_OUTPUT_SAMPLE_RATE")};
+                final String strSampleRate = Cocos2dxReflectionHelper.<String>invokeInstanceMethod(am, "getProperty", new Class[]{String.class}, parameters);
+
+                // AudioManager.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
+                parameters = new Object[]{Cocos2dxReflectionHelper.<String>getConstantValue(audioManagerClass, "PROPERTY_OUTPUT_FRAMES_PER_BUFFER")};
+                final String strBufferSizeInFrames = Cocos2dxReflectionHelper.<String>invokeInstanceMethod(am, "getProperty", new Class[]{String.class}, parameters);
+
+                sampleRate = Integer.parseInt(strSampleRate);
+                bufferSizeInFrames = Integer.parseInt(strBufferSizeInFrames);
+
+                Log.d(TAG, "sampleRate: " + sampleRate + ", framesPerBuffer: " + bufferSizeInFrames);
+            } else {
+                Log.d(TAG, "android version is lower than 17");
+            }
+
+            nativeSetAudioDeviceInfo(isSupportLowLatency, sampleRate, bufferSizeInFrames);
+
             final ApplicationInfo applicationInfo = activity.getApplicationInfo();
 
             sPackageName = applicationInfo.packageName;
@@ -114,6 +150,8 @@ public class Cocos2dxHelper {
     private static native void nativeSetEditTextDialogResult(final byte[] pBytes);
 
     private static native void nativeSetContext(final ClassLoader classLoader, final AssetManager pAssetManager);
+
+    private static native void nativeSetAudioDeviceInfo(boolean isSupportLowLatency, int deviceSampleRate, int audioBufferSizeInFames);
 
     public static String getCocos2dxPackageName() {
         return Cocos2dxHelper.sPackageName;
@@ -521,6 +559,5 @@ public class Cocos2dxHelper {
 
         return null;
     }
-
 }
 
