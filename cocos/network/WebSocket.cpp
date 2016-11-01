@@ -574,7 +574,7 @@ void WebSocket::onSubThreadStarted()
 
     info.port = CONTEXT_PORT_NO_LISTEN;
     info.protocols = _wsProtocols;
-    info.extensions = exts;
+    // info.extensions = exts;
 
     info.gid = -1;
     info.uid = -1;
